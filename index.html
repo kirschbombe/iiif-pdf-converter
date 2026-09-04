@@ -61,9 +61,9 @@
 
       <label for="imgQuality" style="margin-top: 1.5rem;">Image Quality / File Size</label>
       <select id="imgQuality">
-        <option value="max" selected>Full Quality (Original Resolution)</option>
-        <option value="!2000,2000">Balanced (Recommended - Max 2000px)</option>
+        <option value="!2000,2000" selected>Balanced (Recommended - Max 2000px)</option>
         <option value="!1000,1000">Compact (Small File - Max 1000px)</option>
+        <option value="max">Full Quality (Original Resolution - Large File)</option>
       </select>
 
       <label for="outputFilename">Custom File Name (Optional)</label>
@@ -122,7 +122,7 @@
 
       if (serviceId) {
         const cleanService = serviceId.replace(/\/info\.json$/, '').replace(/\/$/, '');
-        const qualitySetting = document.getElementById('imgQuality')?.value || 'max';
+        const qualitySetting = document.getElementById('imgQuality')?.value || '!2000,2000';
         const sizeParam = isThumbnail ? '!200,200' : qualitySetting;
         return `${cleanService}/full/${sizeParam}/0/default.jpg`;
       }
