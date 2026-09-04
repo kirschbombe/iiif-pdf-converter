@@ -13,6 +13,7 @@
     input, select { width: 100%; padding: 0.75rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; box-sizing: border-box; margin-bottom: 1rem; }
     button { padding: 0.75rem 1.25rem; border: none; border-radius: 6px; background: #38bdf8; color: #0f172a; font-weight: bold; cursor: pointer; }
     button.secondary { background: #334155; color: #f8fafc; }
+    button.warning { background: #f59e0b; color: #0f172a; }
     button.danger { background: #ef4444; color: #fff; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     
@@ -26,10 +27,13 @@
     .thumb-label { font-size: 0.75rem; color: #cbd5e1; margin-top: 0.5rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .checkbox { position: absolute; top: 8px; right: 8px; width: 18px; height: 18px; }
 
-    /* Progress Bar */
+    /* Progress & Job Control Action Bar */
     #progressContainer { display: none; margin-top: 1rem; }
     .progress-bar-bg { background: #0f172a; border-radius: 8px; height: 12px; overflow: hidden; border: 1px solid #334155; }
     #progressBar { background: #38bdf8; width: 0%; height: 100%; transition: width 0.2s ease; }
+    
+    .job-controls { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+    .job-controls button { flex: 1; padding: 0.5rem; font-size: 0.85rem; }
 
     #status { margin-top: 1rem; font-size: 0.9rem; color: #94a3b8; word-break: break-all; }
 
@@ -72,10 +76,14 @@
       <button id="convertBtn" onclick="generatePdf()" style="width: 100%; margin-top: 0.5rem;">Generate Selected PDF</button>
     </div>
 
-    <!-- Progress Bar -->
+    <!-- Progress Bar & Job Controls -->
     <div id="progressContainer">
       <div class="progress-bar-bg">
         <div id="progressBar"></div>
+      </div>
+      <div class="job-controls">
+        <button id="pauseBtn" class="warning" onclick="togglePause()">Pause</button>
+        <button id="cancelBtn" class="danger" onclick="cancelJob()">Cancel Job</button>
       </div>
     </div>
 
@@ -97,6 +105,10 @@
     let currentCanvases = [];
     let selectedIndices = new Set();
     let currentManifest = null;
+
+    // Job state tracking variables
+    let isPaused = false;
+    let isCancelled = false;
 
     function getLabel(canvas, index) {
       if (!canvas.label) return `Page ${index + 1}`;
@@ -221,9 +233,31 @@
       document.getElementById('selectCount').innerText = `${selectedIndices.size} of ${currentCanvases.length} pages selected`;
     }
 
+    function togglePause() {
+      const pauseBtn = document.getElementById('pauseBtn');
+      const status = document.getElementById('status');
+
+      isPaused = !isPaused;
+      if (isPaused) {
+        pauseBtn.innerText = 'Resume';
+        pauseBtn.className = 'secondary';
+        status.innerText = 'Download paused by user.';
+      } else {
+        pauseBtn.innerText = 'Pause';
+        pauseBtn.className = 'warning';
+      }
+    }
+
+    function cancelJob() {
+      isCancelled = true;
+      isPaused = false; // Release pause loop if active
+    }
+
     async function fetchImageWithRetry(url, maxRetries = 3) {
       let currentUrl = url;
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        if (isCancelled) return null;
+
         try {
           let res = await fetch(currentUrl);
 
@@ -277,8 +311,15 @@
       const convertBtn = document.getElementById('convertBtn');
       const progressContainer = document.getElementById('progressContainer');
       const progressBar = document.getElementById('progressBar');
+      const pauseBtn = document.getElementById('pauseBtn');
 
       if (selectedIndices.size === 0) return alert('Select at least one page');
+
+      // Reset job flags & controls UI
+      isPaused = false;
+      isCancelled = false;
+      pauseBtn.innerText = 'Pause';
+      pauseBtn.className = 'warning';
 
       convertBtn.disabled = true;
       document.getElementById('errorBox').style.display = 'none';
@@ -291,6 +332,19 @@
       let skippedPages = [];
 
       for (let idx = 0; idx < sortedIndices.length; idx++) {
+        // Pause Intercept Loop
+        while (isPaused && !isCancelled) {
+          await delay(300);
+        }
+
+        // Cancel Intercept Exit
+        if (isCancelled) {
+          status.innerText = 'Job cancelled by user.';
+          convertBtn.disabled = false;
+          progressContainer.style.display = 'none';
+          return;
+        }
+
         const i = sortedIndices[idx];
         const pageLabel = getLabel(currentCanvases[i], i);
         
@@ -311,10 +365,12 @@
         let imgBytes = null;
         let keepTrying = true;
 
-        while (keepTrying && !imgBytes) {
+        while (keepTrying && !imgBytes && !isCancelled) {
           try {
             imgBytes = await fetchImageWithRetry(imgUrl, 3);
           } catch (err) {
+            if (isCancelled) break;
+
             const userChoice = await askUserOnError(pageLabel, i + 1, err.message);
 
             if (userChoice === 'retry') {
@@ -330,6 +386,13 @@
               return;
             }
           }
+        }
+
+        if (isCancelled) {
+          status.innerText = 'Job cancelled by user.';
+          convertBtn.disabled = false;
+          progressContainer.style.display = 'none';
+          return;
         }
 
         if (!imgBytes) continue;
