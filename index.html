@@ -19,8 +19,13 @@
 <body>
   <div class="card">
     <h2>IIIF Manifest to PDF</h2>
+    
     <label for="manifestUrl">Manifest URL</label>
-    <input type="url" id="manifestUrl" placeholder="https://example.org/iiif/manifest.json" />
+    <input type="url" id="manifestUrl" placeholder="https://example.org/iiif/manifest.json" required />
+
+    <label for="outputFilename">Custom File Name (Optional)</label>
+    <input type="text" id="outputFilename" placeholder="my-custom-document" />
+
     <button id="btn" onclick="convert()">Generate PDF</button>
     <div id="status"></div>
   </div>
@@ -28,8 +33,10 @@
   <script>
     async function convert() {
       const url = document.getElementById('manifestUrl').value.trim();
+      const customName = document.getElementById('outputFilename').value.trim();
       const status = document.getElementById('status');
       const btn = document.getElementById('btn');
+      
       if (!url) return alert('Please enter a IIIF Manifest URL');
 
       btn.disabled = true;
@@ -79,7 +86,18 @@
         const blob = new Blob([pdfBytes], { type: 'application/pdf' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = `${manifest.label?.en?.[0] || manifest.label || 'document'}.pdf`;
+
+        // Determine filename priority: Custom Input > Manifest Label > Fallback Default
+        let fileName = customName;
+        if (!fileName) {
+          fileName = manifest.label?.en?.[0] || manifest.label || 'iiif-document';
+        }
+        // Ensure .pdf extension
+        if (!fileName.toLowerCase().endsWith('.pdf')) {
+          fileName += '.pdf';
+        }
+
+        a.download = fileName;
         a.click();
 
         status.innerText = 'Download complete!';
