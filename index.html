@@ -6,14 +6,31 @@
   <title>IIIF to PDF Converter</title>
   <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <style>
-    body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-    .card { background: #1e293b; padding: 2rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 100%; max-width: 480px; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; margin: 0; display: flex; justify-content: center; }
+    .card { background: #1e293b; padding: 2rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 100%; max-width: 800px; }
     h2 { margin-top: 0; color: #38bdf8; }
     label { display: block; margin-bottom: 0.5rem; color: #94a3b8; }
     input { width: 100%; padding: 0.75rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; box-sizing: border-box; margin-bottom: 1rem; }
-    button { width: 100%; padding: 0.75rem; border: none; border-radius: 6px; background: #38bdf8; color: #0f172a; font-weight: bold; cursor: pointer; }
+    button { padding: 0.75rem 1.25rem; border: none; border-radius: 6px; background: #38bdf8; color: #0f172a; font-weight: bold; cursor: pointer; }
+    button.secondary { background: #334155; color: #f8fafc; }
+    button.danger { background: #ef4444; color: #fff; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+    
+    #gridContainer { display: none; margin-top: 1.5rem; border-top: 1px solid #334155; padding-top: 1rem; }
+    .grid-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 1rem; max-height: 380px; overflow-y: auto; padding-right: 0.5rem; }
+    .thumb-card { background: #0f172a; border: 2px solid #334155; border-radius: 6px; padding: 0.5rem; text-align: center; cursor: pointer; position: relative; user-select: none; }
+    .thumb-card.selected { border-color: #38bdf8; background: #0c4a6e; }
+    .thumb-card img { width: 100%; height: 120px; object-fit: contain; border-radius: 4px; background: #1e293b; }
+    .thumb-label { font-size: 0.75rem; color: #cbd5e1; margin-top: 0.5rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .checkbox { position: absolute; top: 8px; right: 8px; width: 18px; height: 18px; }
+
     #status { margin-top: 1rem; font-size: 0.9rem; color: #94a3b8; word-break: break-all; }
+
+    /* Error Modal Banner */
+    #errorBox { display: none; margin-top: 1rem; padding: 1rem; background: #451a1a; border: 1px solid #f87171; border-radius: 8px; }
+    #errorBox p { margin: 0 0 1rem 0; color: #fca5a5; font-size: 0.95rem; }
+    .error-actions { display: flex; gap: 0.5rem; }
   </style>
 </head>
 <body>
@@ -23,22 +40,58 @@
     <label for="manifestUrl">Manifest URL</label>
     <input type="url" id="manifestUrl" placeholder="https://example.org/iiif/manifest.json" required />
 
-    <label for="outputFilename">Custom File Name (Optional)</label>
-    <input type="text" id="outputFilename" placeholder="my-custom-document" />
+    <button id="loadBtn" onclick="loadManifest()" style="width: 100%;">Load Pages & Previews</button>
 
-    <button id="btn" onclick="convert()">Generate PDF</button>
+    <div id="gridContainer">
+      <div class="grid-header">
+        <span id="selectCount" style="color: #94a3b8; font-size: 0.9rem;">0 pages selected</span>
+        <div>
+          <button class="secondary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="toggleSelectAll(true)">Select All</button>
+          <button class="secondary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="toggleSelectAll(false)">Deselect All</button>
+        </div>
+      </div>
+
+      <div id="grid" class="grid"></div>
+
+      <label for="outputFilename" style="margin-top: 1.5rem;">Custom File Name (Optional)</label>
+      <input type="text" id="outputFilename" placeholder="my-custom-document" />
+
+      <button id="convertBtn" onclick="generatePdf()" style="width: 100%; margin-top: 0.5rem;">Generate Selected PDF</button>
+    </div>
+
+    <!-- Error Handler Prompt -->
+    <div id="errorBox">
+      <p id="errorMsg"></p>
+      <div class="error-actions">
+        <button id="retryBtn">Retry Page</button>
+        <button class="secondary" id="skipBtn">Skip Page & Continue</button>
+        <button class="danger" id="abortBtn">Abort Download</button>
+      </div>
+    </div>
+
     <div id="status"></div>
   </div>
 
   <script>
     const delay = ms => new Promise(res => setTimeout(res, ms));
+    let currentCanvases = [];
+    let selectedIndices = new Set();
+    let currentManifest = null;
 
-    function getValidIIIFImageUrl(canvas) {
-      // 1. Extract body object (supports IIIF v2 & v3)
+    function getLabel(canvas, index) {
+      if (!canvas.label) return `Page ${index + 1}`;
+      if (typeof canvas.label === 'string') return canvas.label;
+      if (typeof canvas.label === 'object') {
+        const firstKey = Object.keys(canvas.label)[0];
+        return canvas.label[firstKey]?.[0] || `Page ${index + 1}`;
+      }
+      return `Page ${index + 1}`;
+    }
+
+    function getImageUrl(canvas, isThumbnail = false) {
       const body = canvas.items?.[0]?.items?.[0]?.body || canvas.images?.[0]?.resource;
       if (!body) return null;
 
-      // 2. Locate service array or object
       const service = body.service || body.services;
       let serviceId = null;
 
@@ -47,105 +100,256 @@
         serviceId = svc.id || svc['@id'];
       }
 
-      // If a valid IIIF Image Service exists, construct the standardized IIIF v3 / v2 image path
       if (serviceId) {
         const cleanService = serviceId.replace(/\/info\.json$/, '').replace(/\/$/, '');
-        // Using 'max' for v3, fallback URL pattern
-        return `${cleanService}/full/max/0/default.jpg`;
+        const sizeParam = isThumbnail ? '!200,200' : 'max';
+        return `${cleanService}/full/${sizeParam}/0/default.jpg`;
       }
 
-      // 3. Fallback to body.id if no service block exists
       return body.id || body['@id'];
     }
 
-    async function convert() {
+    async function loadManifest() {
       const url = document.getElementById('manifestUrl').value.trim();
-      const customName = document.getElementById('outputFilename').value.trim();
       const status = document.getElementById('status');
-      const btn = document.getElementById('btn');
-      
+      const loadBtn = document.getElementById('loadBtn');
+      const gridContainer = document.getElementById('gridContainer');
+      const grid = document.getElementById('grid');
+
       if (!url) return alert('Please enter a IIIF Manifest URL');
 
-      btn.disabled = true;
-      status.innerText = 'Fetching manifest...';
+      loadBtn.disabled = true;
+      gridContainer.style.display = 'none';
+      document.getElementById('errorBox').style.display = 'none';
+      status.innerText = 'Fetching manifest and loading thumbnails...';
 
       try {
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
-        const manifest = await res.json();
+        currentManifest = await res.json();
 
-        const canvases = manifest.items || manifest.sequences?.[0]?.canvases || [];
-        if (!canvases.length) throw new Error('No canvases found in manifest.');
+        currentCanvases = currentManifest.items || currentManifest.sequences?.[0]?.canvases || [];
+        if (!currentCanvases.length) throw new Error('No canvases found in manifest.');
 
-        const pdfDoc = await PDFLib.PDFDocument.create();
-        let successCount = 0;
+        grid.innerHTML = '';
+        selectedIndices.clear();
 
-        for (let i = 0; i < canvases.length; i++) {
-          status.innerText = `Processing page ${i + 1} of ${canvases.length}...`;
-          const canvas = canvases[i];
-          let imgUrl = getValidIIIFImageUrl(canvas);
+        currentCanvases.forEach((canvas, idx) => {
+          selectedIndices.add(idx);
+          const labelText = getLabel(canvas, idx);
+          const thumbUrl = getImageUrl(canvas, true);
 
-          if (!imgUrl) {
-            console.warn(`Page ${i + 1}: Could not construct image URL`);
-            continue;
+          const item = document.createElement('div');
+          item.className = 'thumb-card selected';
+          item.id = `thumb-${idx}`;
+          item.onclick = () => togglePage(idx);
+
+          item.innerHTML = `
+            <input type="checkbox" class="checkbox" checked onclick="event.stopPropagation(); togglePage(${idx});">
+            <img src="${thumbUrl}" alt="${labelText}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22><rect width=%22100%22 height=%22100%22 fill=%22%23334155%22/></svg>'">
+            <div class="thumb-label" title="${labelText}">${labelText}</div>
+          `;
+          grid.appendChild(item);
+        });
+
+        updateCount();
+        gridContainer.style.display = 'block';
+        status.innerText = `Loaded ${currentCanvases.length} pages.`;
+      } catch (err) {
+        status.innerText = 'Error: ' + err.message;
+      } finally {
+        loadBtn.disabled = false;
+      }
+    }
+
+    function togglePage(idx) {
+      const card = document.getElementById(`thumb-${idx}`);
+      const checkbox = card.querySelector('.checkbox');
+
+      if (selectedIndices.has(idx)) {
+        selectedIndices.delete(idx);
+        card.classList.remove('selected');
+        checkbox.checked = false;
+      } else {
+        selectedIndices.add(idx);
+        card.classList.add('selected');
+        checkbox.checked = true;
+      }
+      updateCount();
+    }
+
+    function toggleSelectAll(select) {
+      currentCanvases.forEach((_, idx) => {
+        const card = document.getElementById(`thumb-${idx}`);
+        const checkbox = card.querySelector('.checkbox');
+        if (select) {
+          selectedIndices.add(idx);
+          card.classList.add('selected');
+          checkbox.checked = true;
+        } else {
+          selectedIndices.delete(idx);
+          card.classList.remove('selected');
+          checkbox.checked = false;
+        }
+      });
+      updateCount();
+    }
+
+    function updateCount() {
+      document.getElementById('selectCount').innerText = `${selectedIndices.size} of ${currentCanvases.length} pages selected`;
+    }
+
+    // Helper: Fetches an image with up to 3 automatic retries
+    async function fetchImageWithRetry(url, maxRetries = 3) {
+      let currentUrl = url;
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          let res = await fetch(currentUrl);
+
+          // If max fails, try full
+          if (!res.ok && currentUrl.includes('/full/max/')) {
+            currentUrl = currentUrl.replace('/full/max/', '/full/full/');
+            res = await fetch(currentUrl);
           }
 
-          if (i > 0) await delay(300); // Prevent request spamming
+          if (res.ok) return await res.arrayBuffer();
 
+          if (attempt < maxRetries) {
+            await delay(1000 * attempt); // Backoff wait (1s, 2s, 3s)
+          } else {
+            throw new Error(`HTTP ${res.status}`);
+          }
+        } catch (err) {
+          if (attempt >= maxRetries) throw err;
+          await delay(1000 * attempt);
+        }
+      }
+    }
+
+    // Prompt user when a page permanently fails
+    function askUserOnError(pageLabel, pageNum, errorDetail) {
+      return new Promise((resolve) => {
+        const errorBox = document.getElementById('errorBox');
+        const errorMsg = document.getElementById('errorMsg');
+        const retryBtn = document.getElementById('retryBtn');
+        const skipBtn = document.getElementById('skipBtn');
+        const abortBtn = document.getElementById('abortBtn');
+
+        errorMsg.innerText = `Failed to download Page ${pageNum} ("${pageLabel}") after 3 retries (${errorDetail}). What would you like to do?`;
+        errorBox.style.display = 'block';
+
+        const cleanup = (choice) => {
+          errorBox.style.display = 'none';
+          retryBtn.onclick = null;
+          skipBtn.onclick = null;
+          abortBtn.onclick = null;
+          resolve(choice);
+        };
+
+        retryBtn.onclick = () => cleanup('retry');
+        skipBtn.onclick = () => cleanup('skip');
+        abortBtn.onclick = () => cleanup('abort');
+      });
+    }
+
+    async function generatePdf() {
+      const customName = document.getElementById('outputFilename').value.trim();
+      const status = document.getElementById('status');
+      const convertBtn = document.getElementById('convertBtn');
+
+      if (selectedIndices.size === 0) return alert('Select at least one page');
+
+      convertBtn.disabled = true;
+      document.getElementById('errorBox').style.display = 'none';
+      
+      const sortedIndices = Array.from(selectedIndices).sort((a, b) => a - b);
+      const pdfDoc = await PDFLib.PDFDocument.create();
+      let successCount = 0;
+      let skippedPages = [];
+
+      for (let idx = 0; idx < sortedIndices.length; idx++) {
+        const i = sortedIndices[idx];
+        const pageLabel = getLabel(currentCanvases[i], i);
+        status.innerText = `Downloading page ${idx + 1} of ${sortedIndices.length} ("${pageLabel}")...`;
+
+        const canvas = currentCanvases[i];
+        let imgUrl = getImageUrl(canvas, false);
+
+        if (!imgUrl) {
+          skippedPages.push(`${pageLabel} (No URL found)`);
+          continue;
+        }
+
+        if (idx > 0) await delay(300); // Pace requests to avoid server throttle
+
+        let imgBytes = null;
+        let keepTrying = true;
+
+        while (keepTrying && !imgBytes) {
           try {
-            let imgRes = await fetch(imgUrl);
+            imgBytes = await fetchImageWithRetry(imgUrl, 3);
+          } catch (err) {
+            // Automatic retries failed — pause and ask user
+            const userChoice = await askUserOnError(pageLabel, i + 1, err.message);
 
-            // Fallback strategy: If /full/max/ returns 403/404, try /full/full/
-            if (!imgRes.ok && imgUrl.includes('/full/max/')) {
-              imgUrl = imgUrl.replace('/full/max/', '/full/full/');
-              imgRes = await fetch(imgUrl);
+            if (userChoice === 'retry') {
+              status.innerText = `Retrying page ${i + 1}...`;
+              await delay(1000);
+            } else if (userChoice === 'skip') {
+              skippedPages.push(`${pageLabel} (${err.message})`);
+              keepTrying = false;
+            } else if (userChoice === 'abort') {
+              status.innerText = 'Download aborted by user.';
+              convertBtn.disabled = false;
+              return;
             }
-
-            if (!imgRes.ok) {
-              console.warn(`Skipping page ${i + 1}: HTTP ${imgRes.status}`);
-              continue;
-            }
-
-            const imgBytes = await imgRes.arrayBuffer();
-            
-            let image;
-            try {
-              image = await pdfDoc.embedJpg(imgBytes);
-            } catch {
-              image = await pdfDoc.embedPng(imgBytes);
-            }
-
-            const page = pdfDoc.addPage([image.width, image.height]);
-            page.drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
-            successCount++;
-
-          } catch (pageErr) {
-            console.warn(`Error on page ${i + 1}:`, pageErr);
           }
         }
 
-        if (successCount === 0) throw new Error('Failed to load any page images from the manifest.');
+        if (!imgBytes) continue;
 
-        status.innerText = `Compiling PDF (${successCount}/${canvases.length} pages)...`;
-        const pdfBytes = await pdfDoc.save();
-        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
+        try {
+          let image;
+          try {
+            image = await pdfDoc.embedJpg(imgBytes);
+          } catch {
+            image = await pdfDoc.embedPng(imgBytes);
+          }
 
-        let fileName = customName || manifest.label?.en?.[0] || manifest.label || 'iiif-document';
-        if (typeof fileName === 'object') fileName = 'iiif-document';
-        if (!fileName.toLowerCase().endsWith('.pdf')) fileName += '.pdf';
-
-        a.download = fileName;
-        a.click();
-
-        status.innerText = `Done! Successfully converted ${successCount} of ${canvases.length} pages.`;
-      } catch (err) {
-        status.innerText = 'Error: ' + err.message;
-        console.error(err);
-      } finally {
-        btn.disabled = false;
+          const page = pdfDoc.addPage([image.width, image.height]);
+          page.drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
+          successCount++;
+        } catch (embedErr) {
+          console.warn(`Embedding failed on page ${i + 1}:`, embedErr);
+          skippedPages.push(`${pageLabel} (Corrupt image format)`);
+        }
       }
+
+      if (successCount === 0) {
+        status.innerText = 'Failed to generate PDF. No pages were successfully retrieved.';
+        convertBtn.disabled = false;
+        return;
+      }
+
+      status.innerText = 'Compiling PDF file...';
+      const pdfBytes = await pdfDoc.save();
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+
+      let fileName = customName || currentManifest.label?.en?.[0] || currentManifest.label || 'iiif-document';
+      if (typeof fileName === 'object') fileName = 'iiif-document';
+      if (!fileName.toLowerCase().endsWith('.pdf')) fileName += '.pdf';
+
+      a.download = fileName;
+      a.click();
+
+      let finalReport = `Done! Created PDF with ${successCount} pages.`;
+      if (skippedPages.length > 0) {
+        finalReport += ` (${skippedPages.length} skipped: ${skippedPages.join(', ')})`;
+      }
+      status.innerText = finalReport;
+      convertBtn.disabled = false;
     }
   </script>
 </body>
