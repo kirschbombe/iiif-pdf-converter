@@ -10,7 +10,7 @@
     .card { background: #1e293b; padding: 2rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 100%; max-width: 480px; }
     h2 { margin-top: 0; color: #38bdf8; }
     label { display: block; margin-bottom: 0.5rem; color: #94a3b8; }
-    input { width: 100%; padding: 0.75rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; box-sizing: border-box; margin-bottom: 1rem; }
+    input, select { width: 100%; padding: 0.75rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; box-sizing: border-box; margin-bottom: 1rem; }
     button { width: 100%; padding: 0.75rem; border: none; border-radius: 6px; background: #38bdf8; color: #0f172a; font-weight: bold; cursor: pointer; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     #status { margin-top: 1rem; font-size: 0.9rem; color: #94a3b8; word-break: break-all; }
@@ -26,14 +26,54 @@
     <label for="outputFilename">Custom File Name (Optional)</label>
     <input type="text" id="outputFilename" placeholder="my-custom-document" />
 
+    <label for="maxResolution">Max Image Width (Prevents 429 Errors)</label>
+    <select id="maxResolution">
+      <option value="1600" selected>1600px (Recommended - Fast & Sharp)</option>
+      <option value="2000">2000px (Higher Quality)</option>
+      <option value="full">Full Uncompressed (Slow / May Rate Limit)</option>
+    </select>
+
     <button id="btn" onclick="convert()">Generate PDF</button>
     <div id="status"></div>
   </div>
 
   <script>
+    // Helper delay to avoid triggering server rate limits
+    const delay = ms => new Promise(res => setTimeout(res, ms));
+
+    function buildImageUrl(canvas, maxRes) {
+      // 1. Try to find explicit IIIF Service URL
+      let serviceId = null;
+      
+      const body = canvas.items?.[0]?.items?.[0]?.body || canvas.images?.[0]?.resource;
+      if (body) {
+        const service = body.service || body.services;
+        if (service) {
+          const svcObj = Array.isArray(service) ? service[0] : service;
+          serviceId = svcObj['@id'] || svcObj.id;
+        }
+      }
+
+      const sizeParam = maxRes === 'full' ? 'full' : `${maxRes},`;
+
+      if (serviceId) {
+        // Strip trailing slashes and clean info.json endings
+        const cleanBase = serviceId.replace(/\/info\.json$/, '').replace(/\/$/, '');
+        return `${cleanBase}/full/${sizeParam}/0/default.jpg`;
+      }
+
+      // 2. Fallback to direct body ID if service isn't defined
+      let rawId = body?.id || body?.['@id'];
+      if (rawId && maxRes !== 'full') {
+        rawId = rawId.replace('/full/full/', `/full/${sizeParam}/`);
+      }
+      return rawId;
+    }
+
     async function convert() {
       const url = document.getElementById('manifestUrl').value.trim();
       const customName = document.getElementById('outputFilename').value.trim();
+      const maxRes = document.getElementById('maxResolution').value;
       const status = document.getElementById('status');
       const btn = document.getElementById('btn');
       
@@ -56,18 +96,24 @@
         for (let i = 0; i < canvases.length; i++) {
           status.innerText = `Processing page ${i + 1} of ${canvases.length}...`;
           const canvas = canvases[i];
-          
-          // Resolve image URL
-          let imgUrl = canvas.images ? canvas.images[0]?.resource?.['@id'] : canvas.items?.[0]?.items?.[0]?.body?.id;
-          if (!imgUrl && canvas.items?.[0]?.items?.[0]?.body?.service) {
-            const svc = canvas.items[0].items[0].body.service;
-            const svcId = Array.isArray(svc) ? svc[0]['@id'] || svc[0].id : svc['@id'] || svc.id;
-            imgUrl = `${svcId}/full/full/0/default.jpg`;
-          }
+          const imgUrl = buildImageUrl(canvas, maxRes);
 
           if (!imgUrl) continue;
 
-          const imgRes = await fetch(imgUrl);
+          // Introduce a 300ms pause between requests to prevent 429 rate limits
+          if (i > 0) await delay(300);
+
+          let imgRes = await fetch(imgUrl);
+          
+          // Retry once with a longer delay if rate limited (HTTP 429)
+          if (imgRes.status === 429) {
+            status.innerText = `Server busy. Retrying page ${i + 1} in 2 seconds...`;
+            await delay(2000);
+            imgRes = await fetch(imgUrl);
+          }
+
+          if (!imgRes.ok) throw new Error(`Failed to load page ${i + 1} (HTTP ${imgRes.status})`);
+
           const imgBytes = await imgRes.arrayBuffer();
           
           let image;
@@ -87,12 +133,10 @@
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
 
-        // Determine filename priority: Custom Input > Manifest Label > Fallback Default
         let fileName = customName;
         if (!fileName) {
           fileName = manifest.label?.en?.[0] || manifest.label || 'iiif-document';
         }
-        // Ensure .pdf extension
         if (!fileName.toLowerCase().endsWith('.pdf')) {
           fileName += '.pdf';
         }
