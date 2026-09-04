@@ -33,19 +33,29 @@
   <script>
     const delay = ms => new Promise(res => setTimeout(res, ms));
 
-    function getDirectImageUrl(canvas) {
-      // Direct body location extraction for v3 / v2 without rewriting paths
+    function getValidIIIFImageUrl(canvas) {
+      // 1. Extract body object (supports IIIF v2 & v3)
       const body = canvas.items?.[0]?.items?.[0]?.body || canvas.images?.[0]?.resource;
       if (!body) return null;
-      
-      let rawId = body.id || body['@id'];
-      
-      // If rawId points to an info.json, convert to default image request
-      if (rawId && rawId.endsWith('/info.json')) {
-        rawId = rawId.replace('/info.json', '/full/full/0/default.jpg');
+
+      // 2. Locate service array or object
+      const service = body.service || body.services;
+      let serviceId = null;
+
+      if (service) {
+        const svc = Array.isArray(service) ? service[0] : service;
+        serviceId = svc.id || svc['@id'];
       }
-      
-      return rawId;
+
+      // If a valid IIIF Image Service exists, construct the standardized IIIF v3 / v2 image path
+      if (serviceId) {
+        const cleanService = serviceId.replace(/\/info\.json$/, '').replace(/\/$/, '');
+        // Using 'max' for v3, fallback URL pattern
+        return `${cleanService}/full/max/0/default.jpg`;
+      }
+
+      // 3. Fallback to body.id if no service block exists
+      return body.id || body['@id'];
     }
 
     async function convert() {
@@ -73,28 +83,27 @@
         for (let i = 0; i < canvases.length; i++) {
           status.innerText = `Processing page ${i + 1} of ${canvases.length}...`;
           const canvas = canvases[i];
-          const imgUrl = getDirectImageUrl(canvas);
+          let imgUrl = getValidIIIFImageUrl(canvas);
 
           if (!imgUrl) {
-            console.warn(`Skipping page ${i + 1}: No image URL found`);
+            console.warn(`Page ${i + 1}: Could not construct image URL`);
             continue;
           }
 
-          if (i > 0) await delay(250); // Pause to prevent rate limiting
+          if (i > 0) await delay(300); // Prevent request spamming
 
           try {
             let imgRes = await fetch(imgUrl);
 
-            // Handle temporary rate limits
-            if (imgRes.status === 429) {
-              status.innerText = `Rate limited. Retrying page ${i + 1} in 3 seconds...`;
-              await delay(3000);
+            // Fallback strategy: If /full/max/ returns 403/404, try /full/full/
+            if (!imgRes.ok && imgUrl.includes('/full/max/')) {
+              imgUrl = imgUrl.replace('/full/max/', '/full/full/');
               imgRes = await fetch(imgUrl);
             }
 
             if (!imgRes.ok) {
-              console.warn(`Failed page ${i + 1}: HTTP ${imgRes.status}`);
-              continue; // Skip failing page and proceed with compilation
+              console.warn(`Skipping page ${i + 1}: HTTP ${imgRes.status}`);
+              continue;
             }
 
             const imgBytes = await imgRes.arrayBuffer();
@@ -115,21 +124,22 @@
           }
         }
 
-        if (successCount === 0) throw new Error('Could not download any images from this manifest.');
+        if (successCount === 0) throw new Error('Failed to load any page images from the manifest.');
 
-        status.innerText = `Compiling PDF (${successCount}/${canvases.length} pages ready)...`;
+        status.innerText = `Compiling PDF (${successCount}/${canvases.length} pages)...`;
         const pdfBytes = await pdfDoc.save();
         const blob = new Blob([pdfBytes], { type: 'application/pdf' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
 
         let fileName = customName || manifest.label?.en?.[0] || manifest.label || 'iiif-document';
+        if (typeof fileName === 'object') fileName = 'iiif-document';
         if (!fileName.toLowerCase().endsWith('.pdf')) fileName += '.pdf';
 
         a.download = fileName;
         a.click();
 
-        status.innerText = `Download complete! Successfully processed ${successCount} of ${canvases.length} pages.`;
+        status.innerText = `Done! Successfully converted ${successCount} of ${canvases.length} pages.`;
       } catch (err) {
         status.innerText = 'Error: ' + err.message;
         console.error(err);
