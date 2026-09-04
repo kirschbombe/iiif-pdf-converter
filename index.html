@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -41,6 +42,24 @@
     #errorBox { display: none; margin-top: 1rem; padding: 1rem; background: #451a1a; border: 1px solid #f87171; border-radius: 8px; }
     #errorBox p { margin: 0 0 1rem 0; color: #fca5a5; font-size: 0.95rem; }
     .error-actions { display: flex; gap: 0.5rem; }
+
+    /* Footer Credits */
+    .footer {
+      margin-top: 2rem;
+      padding-top: 1rem;
+      border-top: 1px solid #334155;
+      text-align: center;
+      font-size: 0.8rem;
+      color: #64748b;
+      line-height: 1.5;
+    }
+    .footer a {
+      color: #38bdf8;
+      text-decoration: none;
+    }
+    .footer a:hover {
+      text-decoration: underline;
+    }
   </style>
 </head>
 <body>
@@ -98,6 +117,13 @@
     </div>
 
     <div id="status"></div>
+
+    <!-- Footer Credits -->
+    <div class="footer">
+      Built with <a href="https://pdf-lib.js.org/" target="_blank" rel="noopener">pdf-lib</a> 
+      &bull; Inspired by <a href="https://github.com/dbmdz/pdiiif" target="_blank" rel="noopener">pdiiif</a> 
+      &bull; Powered by <a href="https://iiif.io/" target="_blank" rel="noopener">IIIF</a>
+    </div>
   </div>
 
   <script>
@@ -106,7 +132,6 @@
     let selectedIndices = new Set();
     let currentManifest = null;
 
-    // Job state tracking variables
     let isPaused = false;
     let isCancelled = false;
 
@@ -250,7 +275,7 @@
 
     function cancelJob() {
       isCancelled = true;
-      isPaused = false; // Release pause loop if active
+      isPaused = false;
     }
 
     async function fetchImageWithRetry(url, maxRetries = 3) {
@@ -315,7 +340,6 @@
 
       if (selectedIndices.size === 0) return alert('Select at least one page');
 
-      // Reset job flags & controls UI
       isPaused = false;
       isCancelled = false;
       pauseBtn.innerText = 'Pause';
@@ -332,12 +356,10 @@
       let skippedPages = [];
 
       for (let idx = 0; idx < sortedIndices.length; idx++) {
-        // Pause Intercept Loop
         while (isPaused && !isCancelled) {
           await delay(300);
         }
 
-        // Cancel Intercept Exit
         if (isCancelled) {
           status.innerText = 'Job cancelled by user.';
           convertBtn.disabled = false;
