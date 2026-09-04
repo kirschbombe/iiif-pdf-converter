@@ -10,12 +10,13 @@
     .card { background: #1e293b; padding: 2rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 100%; max-width: 800px; }
     h2 { margin-top: 0; color: #38bdf8; }
     label { display: block; margin-bottom: 0.5rem; color: #94a3b8; }
-    input { width: 100%; padding: 0.75rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; box-sizing: border-box; margin-bottom: 1rem; }
+    input, select { width: 100%; padding: 0.75rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; box-sizing: border-box; margin-bottom: 1rem; }
     button { padding: 0.75rem 1.25rem; border: none; border-radius: 6px; background: #38bdf8; color: #0f172a; font-weight: bold; cursor: pointer; }
     button.secondary { background: #334155; color: #f8fafc; }
     button.danger { background: #ef4444; color: #fff; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     
+    /* Thumbnail Grid */
     #gridContainer { display: none; margin-top: 1.5rem; border-top: 1px solid #334155; padding-top: 1rem; }
     .grid-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 1rem; max-height: 380px; overflow-y: auto; padding-right: 0.5rem; }
@@ -25,9 +26,14 @@
     .thumb-label { font-size: 0.75rem; color: #cbd5e1; margin-top: 0.5rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .checkbox { position: absolute; top: 8px; right: 8px; width: 18px; height: 18px; }
 
+    /* Progress Bar */
+    #progressContainer { display: none; margin-top: 1rem; }
+    .progress-bar-bg { background: #0f172a; border-radius: 8px; height: 12px; overflow: hidden; border: 1px solid #334155; }
+    #progressBar { background: #38bdf8; width: 0%; height: 100%; transition: width 0.2s ease; }
+
     #status { margin-top: 1rem; font-size: 0.9rem; color: #94a3b8; word-break: break-all; }
 
-    /* Error Modal Banner */
+    /* Error Handler Box */
     #errorBox { display: none; margin-top: 1rem; padding: 1rem; background: #451a1a; border: 1px solid #f87171; border-radius: 8px; }
     #errorBox p { margin: 0 0 1rem 0; color: #fca5a5; font-size: 0.95rem; }
     .error-actions { display: flex; gap: 0.5rem; }
@@ -53,10 +59,24 @@
 
       <div id="grid" class="grid"></div>
 
-      <label for="outputFilename" style="margin-top: 1.5rem;">Custom File Name (Optional)</label>
+      <label for="imgQuality" style="margin-top: 1.5rem;">Image Quality / File Size</label>
+      <select id="imgQuality">
+        <option value="max" selected>Full Quality (Original Resolution)</option>
+        <option value="!2000,2000">Balanced (Recommended - Max 2000px)</option>
+        <option value="!1000,1000">Compact (Small File - Max 1000px)</option>
+      </select>
+
+      <label for="outputFilename">Custom File Name (Optional)</label>
       <input type="text" id="outputFilename" placeholder="my-custom-document" />
 
       <button id="convertBtn" onclick="generatePdf()" style="width: 100%; margin-top: 0.5rem;">Generate Selected PDF</button>
+    </div>
+
+    <!-- Progress Bar -->
+    <div id="progressContainer">
+      <div class="progress-bar-bg">
+        <div id="progressBar"></div>
+      </div>
     </div>
 
     <!-- Error Handler Prompt -->
@@ -102,7 +122,8 @@
 
       if (serviceId) {
         const cleanService = serviceId.replace(/\/info\.json$/, '').replace(/\/$/, '');
-        const sizeParam = isThumbnail ? '!200,200' : 'max';
+        const qualitySetting = document.getElementById('imgQuality')?.value || 'max';
+        const sizeParam = isThumbnail ? '!200,200' : qualitySetting;
         return `${cleanService}/full/${sizeParam}/0/default.jpg`;
       }
 
@@ -121,6 +142,7 @@
       loadBtn.disabled = true;
       gridContainer.style.display = 'none';
       document.getElementById('errorBox').style.display = 'none';
+      document.getElementById('progressContainer').style.display = 'none';
       status.innerText = 'Fetching manifest and loading thumbnails...';
 
       try {
@@ -199,14 +221,12 @@
       document.getElementById('selectCount').innerText = `${selectedIndices.size} of ${currentCanvases.length} pages selected`;
     }
 
-    // Helper: Fetches an image with up to 3 automatic retries
     async function fetchImageWithRetry(url, maxRetries = 3) {
       let currentUrl = url;
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
           let res = await fetch(currentUrl);
 
-          // If max fails, try full
           if (!res.ok && currentUrl.includes('/full/max/')) {
             currentUrl = currentUrl.replace('/full/max/', '/full/full/');
             res = await fetch(currentUrl);
@@ -215,7 +235,7 @@
           if (res.ok) return await res.arrayBuffer();
 
           if (attempt < maxRetries) {
-            await delay(1000 * attempt); // Backoff wait (1s, 2s, 3s)
+            await delay(1000 * attempt);
           } else {
             throw new Error(`HTTP ${res.status}`);
           }
@@ -226,7 +246,6 @@
       }
     }
 
-    // Prompt user when a page permanently fails
     function askUserOnError(pageLabel, pageNum, errorDetail) {
       return new Promise((resolve) => {
         const errorBox = document.getElementById('errorBox');
@@ -256,11 +275,15 @@
       const customName = document.getElementById('outputFilename').value.trim();
       const status = document.getElementById('status');
       const convertBtn = document.getElementById('convertBtn');
+      const progressContainer = document.getElementById('progressContainer');
+      const progressBar = document.getElementById('progressBar');
 
       if (selectedIndices.size === 0) return alert('Select at least one page');
 
       convertBtn.disabled = true;
       document.getElementById('errorBox').style.display = 'none';
+      progressContainer.style.display = 'block';
+      progressBar.style.width = '0%';
       
       const sortedIndices = Array.from(selectedIndices).sort((a, b) => a - b);
       const pdfDoc = await PDFLib.PDFDocument.create();
@@ -270,7 +293,10 @@
       for (let idx = 0; idx < sortedIndices.length; idx++) {
         const i = sortedIndices[idx];
         const pageLabel = getLabel(currentCanvases[i], i);
-        status.innerText = `Downloading page ${idx + 1} of ${sortedIndices.length} ("${pageLabel}")...`;
+        
+        const pct = Math.round(((idx) / sortedIndices.length) * 100);
+        progressBar.style.width = `${pct}%`;
+        status.innerText = `Downloading page ${idx + 1} of ${sortedIndices.length} (${pct}%) — "${pageLabel}"...`;
 
         const canvas = currentCanvases[i];
         let imgUrl = getImageUrl(canvas, false);
@@ -280,7 +306,7 @@
           continue;
         }
 
-        if (idx > 0) await delay(300); // Pace requests to avoid server throttle
+        if (idx > 0) await delay(300);
 
         let imgBytes = null;
         let keepTrying = true;
@@ -289,7 +315,6 @@
           try {
             imgBytes = await fetchImageWithRetry(imgUrl, 3);
           } catch (err) {
-            // Automatic retries failed — pause and ask user
             const userChoice = await askUserOnError(pageLabel, i + 1, err.message);
 
             if (userChoice === 'retry') {
@@ -301,6 +326,7 @@
             } else if (userChoice === 'abort') {
               status.innerText = 'Download aborted by user.';
               convertBtn.disabled = false;
+              progressContainer.style.display = 'none';
               return;
             }
           }
@@ -328,10 +354,13 @@
       if (successCount === 0) {
         status.innerText = 'Failed to generate PDF. No pages were successfully retrieved.';
         convertBtn.disabled = false;
+        progressContainer.style.display = 'none';
         return;
       }
 
+      progressBar.style.width = '100%';
       status.innerText = 'Compiling PDF file...';
+      
       const pdfBytes = await pdfDoc.save();
       const blob = new Blob([pdfBytes], { type: 'application/pdf' });
       const a = document.createElement('a');
